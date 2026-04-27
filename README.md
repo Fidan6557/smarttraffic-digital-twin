@@ -12,6 +12,18 @@ The dashboard presents the system as an operations product rather than a toy sim
 
 ![SmartTraffic Digital Twin dashboard](docs/images/dashboard-overview.png)
 
+### Visual Legend
+
+The simulation view uses simple visual markers so the traffic state is understandable during a live pitch:
+
+- **Green detection boxes:** vehicles detected by the digital twin.
+- **Yellow detection boxes / yellow markers:** pedestrians waiting near the crosswalk or crossing zone.
+- **Red signal lights:** stopped direction.
+- **Yellow signal lights:** transition phase before clearance.
+- **Green signal lights:** currently released traffic direction.
+- **BUS PRIORITY / EMERGENCY overlays:** priority requests that the controller can serve when safety rules allow it.
+- **INCIDENT overlay:** blocked-intersection situation where the system extends the all-red safety phase.
+
 - live intersection video stream
 - adaptive signal state
 - city scenario selector
@@ -40,12 +52,17 @@ SmartTraffic is designed to be easy for judges and stakeholders to evaluate in a
 
 ## Problem
 
-Many intersections still operate with fixed timers. This creates several issues:
+Many city intersections still operate with fixed timers. A fixed timer gives the same green-light duration even when one road is empty, another road has a long queue, pedestrians are waiting, or a bus/emergency vehicle needs priority. This creates a real operational problem: the signal system cannot see demand, cannot explain decisions, and cannot safely test better policies before deployment.
+
+This leads to several issues:
 
 - Traffic lights do not react to changing demand.
 - Long queues form during rush hour or event exits.
 - Pedestrians may wait too long or cross during risky timing.
 - Emergency vehicles and buses receive no intelligent priority.
+- Incidents such as a blocked intersection may not trigger a safety response.
+- Fuel is wasted while vehicles idle unnecessarily.
+- Extra idling increases CO2 emissions.
 - Cities often cannot test signal strategies safely before field deployment.
 
 SmartTraffic addresses this by creating a controllable digital twin where signal policies can be compared through measurable impact.
