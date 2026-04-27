@@ -1952,18 +1952,26 @@ def index():
     """
     return HTMLResponse(html)
 
-def find_available_port(start_port=8000, max_attempts=50):
+def find_available_port(start_port=8000, max_attempts=50, host="127.0.0.1"):
     for port in range(start_port, start_port + max_attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
-                sock.bind(("127.0.0.1", port))
+                sock.bind((host, port))
             except OSError:
                 continue
             return port
     raise RuntimeError(f"No available port found from {start_port} to {start_port + max_attempts - 1}")
 
 
+def get_server_config():
+    port_from_env = os.getenv("PORT")
+    if port_from_env:
+        return "0.0.0.0", int(port_from_env), f"0.0.0.0:{port_from_env}"
+    port = find_available_port(8003)
+    return "127.0.0.1", port, f"127.0.0.1:{port}"
+
+
 if __name__ == "__main__":
-    port = find_available_port(8000)
-    print(f"Smart traffic simulation running at http://127.0.0.1:{port}", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    host, port, display_addr = get_server_config()
+    print(f"Smart traffic simulation running at http://{display_addr}", flush=True)
+    uvicorn.run(app, host=host, port=port)
