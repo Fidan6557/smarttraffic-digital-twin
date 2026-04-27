@@ -12,11 +12,6 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-try:
-    from ultralytics import YOLO
-except ImportError:
-    YOLO = None
-
 app = FastAPI()
 
 flow_ns = 40
@@ -931,7 +926,9 @@ def draw_unavailable_frame(message, detail):
 
 def get_real_detector():
     global real_detector
-    if YOLO is None:
+    try:
+        from ultralytics import YOLO
+    except ImportError:
         return None
     if real_detector is None:
         real_detector = YOLO("yolov8n.pt")
@@ -969,7 +966,8 @@ def draw_real_detection_overlay(frame, detections):
 
 
 def generate_camera_frames(camera_id=0):
-    if YOLO is None:
+    detector = get_real_detector()
+    if detector is None:
         frame = draw_unavailable_frame(
             "Real mode needs ultralytics",
             [
@@ -982,7 +980,6 @@ def generate_camera_frames(camera_id=0):
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
             time.sleep(1)
 
-    detector = get_real_detector()
     cap = cv2.VideoCapture(camera_id)
     if not cap.isOpened():
         frame = draw_unavailable_frame(
