@@ -4,7 +4,7 @@ SmartTraffic Digital Twin is an AI signal optimization platform for city interse
 
 The current prototype is built as a real-time digital twin: it simulates vehicles, pedestrians, buses, emergency vehicles, signal phases, safety clearance, queue growth, and live operational KPIs. The goal is not only to animate traffic, but to show a decision-support system that stakeholders can understand, test, and evaluate.
 
-![SmartTraffic Digital Twin product poster](docs/images/product-poster.png)
+![SmartTraffic Digital Twin product poster](docs/images/product-poster.jpg)
 
 ## Demo Preview
 
