@@ -1,8 +1,0 @@
-.git
-__pycache__
-*.pyc
-.server-logs
-.env
-.venv
-venv
-traffic-simulation-de
