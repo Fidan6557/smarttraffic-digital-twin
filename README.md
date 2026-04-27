@@ -8,6 +8,8 @@ The current prototype is built as a real-time digital twin: it simulates vehicle
 
 The dashboard presents the system as an operations product rather than a toy simulation:
 
+![SmartTraffic Digital Twin dashboard](docs/images/dashboard-overview.png)
+
 - live intersection video stream
 - adaptive signal state
 - city scenario selector
@@ -15,7 +17,13 @@ The dashboard presents the system as an operations product rather than a toy sim
 - wait time, throughput, CO2, fuel, and pedestrian-risk KPIs
 - downloadable PDF reports for stakeholder review
 
-Recommended visual for GitHub: add a dashboard screenshot or short demo GIF here before final submission.
+### Stakeholder Reports
+
+The demo generates two PDF-style outputs: one for stakeholder impact and one for operator auditability.
+
+| Before/After Impact Report | Operations Decision Report |
+| --- | --- |
+| ![Before/After stakeholder impact report](docs/images/stakeholder-report-preview.png) | ![Operations and controller decision report](docs/images/operations-report-preview.png) |
 
 ## Why This Matters for a Hackathon
 
