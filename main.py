@@ -48,6 +48,8 @@ WIDTH, HEIGHT = 800, 800
 ROAD_WIDTH = 140
 CENTER_X, CENTER_Y = WIDTH // 2, HEIGHT // 2
 CROSSWALK_GAP = 20
+MAX_ACTIVE_CARS = 95
+MAX_ACTIVE_PEDS = 55
 MIN_GREEN = 7.0
 MAX_GREEN = 24.0
 YELLOW_TIME = 2.0
@@ -403,7 +405,7 @@ class Car:
                         self.stopped = True
                     elif self.direction == 'W' and 0 < car.x - (self.x + self.width) < safe_dist:
                         self.stopped = True
-                else:
+                elif self.is_in_intersection_box() or car.is_in_intersection_box():
                     margin = 5
                     if (self.x < car.x + car.width + margin and self.x + self.width > car.x - margin and
                         self.y < car.y + car.length + margin and self.y + self.length > car.y - margin):
@@ -596,7 +598,7 @@ def queue_snapshot(cars, peds):
     ns_score = VEHICLE_QUEUE_WEIGHT * len(queued_ns) + policy["ped_weight"] * len(ped_ns) + policy["wait_weight"] * ns_wait_time
     ew_score = VEHICLE_QUEUE_WEIGHT * len(queued_ew) + policy["ped_weight"] * len(ped_ew) + policy["wait_weight"] * ew_wait_time
 
-    blocked_vehicle = next((c for c in cars if c.is_in_intersection_box() and c.stopped and c.wait_time > 4.0), None)
+    blocked_vehicle = next((c for c in cars if c.is_in_intersection_box() and c.stopped and c.wait_time > 9.0), None)
     priority_vehicle = next((
         c for c in cars
         if c.is_priority_request()
@@ -644,9 +646,26 @@ def update_signal_controller(phase, elapsed, queues, cars, mode):
     }
 
     if queues.get("incident"):
-        return phase if phase.startswith("ALL_RED") else f"{active_axis}_YELLOW", 0.0, {
+        if phase.endswith("_GREEN"):
+            return f"{active_axis}_YELLOW", 0.0, {
+                "title": "Incident detected",
+                "reason": "Vehicle blocked in intersection. Action: enter all-red clearance before releasing a safe movement.",
+            }
+        if phase.endswith("_YELLOW") and elapsed >= policy["yellow"]:
+            next_axis = "EW" if active_axis == "NS" else "NS"
+            return f"ALL_RED_TO_{next_axis}", 0.0, {
+                "title": "Safety clearance active",
+                "reason": "Incident response is clearing the conflict zone with an all-red phase.",
+            }
+        if phase.startswith("ALL_RED") and elapsed >= max(policy["all_red"], 2.0):
+            next_axis = "EW" if phase.endswith("EW") else "NS"
+            return f"{next_axis}_GREEN", 0.0, {
+                "title": f"Released {next_axis} green",
+                "reason": "All-red incident clearance completed; traffic is released to prevent gridlock.",
+            }
+        return phase, elapsed, {
             "title": "Incident detected",
-            "reason": "Vehicle blocked in intersection. Action: extend all-red phase until the conflict zone is clear.",
+            "reason": "Vehicle blocked in intersection. Action: controlled clearance is active.",
         }
 
     if phase == "NS_GREEN":
@@ -803,23 +822,23 @@ def generate_frames():
         ew_interval = 60.0 / flow_ew if flow_ew > 0 else float('inf')
         ped_interval = 60.0 / flow_ped if flow_ped > 0 else float('inf')
 
-        if current_time - last_ns_spawn > ns_interval:
+        if len(cars) < MAX_ACTIVE_CARS and current_time - last_ns_spawn > ns_interval:
             cars.append(Car(np.random.choice(['N', 'S'])))
             last_ns_spawn = current_time
             
-        if current_time - last_ew_spawn > ew_interval:
+        if len(cars) < MAX_ACTIVE_CARS and current_time - last_ew_spawn > ew_interval:
             cars.append(Car(np.random.choice(['E', 'W'])))
             last_ew_spawn = current_time
             
-        if current_time - last_ped_spawn > ped_interval:
+        if len(peds) < MAX_ACTIVE_PEDS and current_time - last_ped_spawn > ped_interval:
             peds.append(Pedestrian(np.random.choice(['N', 'S', 'E', 'W'])))
             last_ped_spawn = current_time
 
-        if emergency_enabled and current_time - last_emergency_spawn > 18:
+        if len(cars) < MAX_ACTIVE_CARS and emergency_enabled and current_time - last_emergency_spawn > 18:
             cars.append(Car(np.random.choice(['N', 'S', 'E', 'W']), vehicle_type="ambulance"))
             last_emergency_spawn = current_time
 
-        if bus_priority_enabled and current_time - last_bus_spawn > 13:
+        if len(cars) < MAX_ACTIVE_CARS and bus_priority_enabled and current_time - last_bus_spawn > 13:
             cars.append(Car(np.random.choice(['N', 'S', 'E', 'W']), vehicle_type="bus"))
             last_bus_spawn = current_time
 
