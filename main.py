@@ -3,9 +3,10 @@ import numpy as np
 import time
 import os
 import socket
+import threading
 from io import BytesIO
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse, HTMLResponse, Response
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse, HTMLResponse, Response, FileResponse
 import uvicorn
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -20,6 +21,7 @@ flow_ped = 20
 cars = []
 peds = []
 real_detector = None
+real_detector_lock = threading.Lock()
 controller_mode = "adaptive"
 scenario_name = "Custom"
 city_context = "Baku, Ganjlik Intersection"
@@ -76,6 +78,17 @@ SCENARIOS = {
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSET_DIR = os.path.join(ROOT_DIR, "assets")
 GENERATED_ASSET_DIR = os.path.join(ASSET_DIR, "generated")
+VIDEO_SOURCES = {
+    1: {"title": "North Approach Camera", "filename": "v1.mp4", "road": "N", "axis": "NS"},
+    2: {"title": "South Approach Camera", "filename": "v2.mp4", "road": "S", "axis": "NS"},
+    3: {"title": "East Approach Camera", "filename": "v3.mp4", "road": "E", "axis": "EW"},
+    4: {"title": "West Approach Camera", "filename": "v4.mp4", "road": "W", "axis": "EW"},
+}
+video_vehicle_counts = {
+    video_id: {"count": 0, "road": source["road"], "axis": source["axis"], "updated_at": 0.0}
+    for video_id, source in VIDEO_SOURCES.items()
+}
+video_count_lock = threading.Lock()
 
 
 def load_image(path, flags=cv2.IMREAD_COLOR):
@@ -727,6 +740,11 @@ def build_metrics(mode, scenario, context, queues, throughput, vehicle_wait_samp
         risk = "MEDIUM"
     if queues["max_wait"] > 35 or queues["ped_queue"] > 12:
         risk = "HIGH"
+    sensor_snapshot = get_video_sensor_snapshot()
+    sensor_counts = {
+        data["road"]: data["count"]
+        for data in sensor_snapshot.values()
+    }
 
     return {
         "mode": mode,
@@ -752,6 +770,8 @@ def build_metrics(mode, scenario, context, queues, throughput, vehicle_wait_samp
         "emergency": queues.get("priority_axis") is not None,
         "priority_type": queues.get("priority_type"),
         "incident": queues.get("incident", False),
+        "video_sensor_counts": sensor_counts,
+        "video_driven_demand": video_counts_are_live(sensor_snapshot),
     }
 
 
@@ -784,6 +804,47 @@ def draw_scene_overlay(img, phase, light_state, queues, throughput, mode, decisi
         cv2.rectangle(img, (454, 70), (782, 116), (24, 20, 20), -1, lineType=cv2.LINE_AA)
         cv2.rectangle(img, (454, 70), (782, 116), (70, 90, 255), 1, lineType=cv2.LINE_AA)
         cv2.putText(img, "INCIDENT: EXTEND ALL-RED", (470, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 120, 255), 1, cv2.LINE_AA)
+
+
+def get_video_sensor_snapshot():
+    with video_count_lock:
+        return {video_id: data.copy() for video_id, data in video_vehicle_counts.items()}
+
+
+def update_video_sensor_count(video_id, count):
+    with video_count_lock:
+        if video_id in video_vehicle_counts:
+            video_vehicle_counts[video_id]["count"] = int(count)
+            video_vehicle_counts[video_id]["updated_at"] = time.time()
+
+
+def video_counts_are_live(snapshot, max_age=12.0):
+    now = time.time()
+    return any(now - data.get("updated_at", 0.0) <= max_age for data in snapshot.values())
+
+
+def get_video_driven_flows():
+    snapshot = get_video_sensor_snapshot()
+    if not video_counts_are_live(snapshot):
+        return flow_ns, flow_ew, None
+    ns_count = sum(data["count"] for data in snapshot.values() if data["axis"] == "NS")
+    ew_count = sum(data["count"] for data in snapshot.values() if data["axis"] == "EW")
+    ns_flow = int(max(8, min(120, 10 + ns_count * 8)))
+    ew_flow = int(max(8, min(120, 10 + ew_count * 8)))
+    return ns_flow, ew_flow, snapshot
+
+
+def choose_video_driven_direction(axis, snapshot):
+    if not snapshot:
+        return np.random.choice(["N", "S"] if axis == "NS" else ["E", "W"])
+    directions = ["N", "S"] if axis == "NS" else ["E", "W"]
+    weights = []
+    for direction in directions:
+        count = next((data["count"] for data in snapshot.values() if data["road"] == direction), 0)
+        weights.append(max(1, count))
+    total = sum(weights)
+    probabilities = [weight / total for weight in weights]
+    return np.random.choice(directions, p=probabilities)
 
 def generate_frames():
     global cars, peds, flow_ns, flow_ew, flow_ped, latest_metrics, latest_decision
@@ -818,16 +879,17 @@ def generate_frames():
         phase_elapsed += dt
         light_state = phase_light_state(phase)
         
-        ns_interval = 60.0 / flow_ns if flow_ns > 0 else float('inf')
-        ew_interval = 60.0 / flow_ew if flow_ew > 0 else float('inf')
+        effective_ns_flow, effective_ew_flow, video_snapshot = get_video_driven_flows()
+        ns_interval = 60.0 / effective_ns_flow if effective_ns_flow > 0 else float('inf')
+        ew_interval = 60.0 / effective_ew_flow if effective_ew_flow > 0 else float('inf')
         ped_interval = 60.0 / flow_ped if flow_ped > 0 else float('inf')
 
         if len(cars) < MAX_ACTIVE_CARS and current_time - last_ns_spawn > ns_interval:
-            cars.append(Car(np.random.choice(['N', 'S'])))
+            cars.append(Car(choose_video_driven_direction("NS", video_snapshot)))
             last_ns_spawn = current_time
             
         if len(cars) < MAX_ACTIVE_CARS and current_time - last_ew_spawn > ew_interval:
-            cars.append(Car(np.random.choice(['E', 'W'])))
+            cars.append(Car(choose_video_driven_direction("EW", video_snapshot)))
             last_ew_spawn = current_time
             
         if len(peds) < MAX_ACTIVE_PEDS and current_time - last_ped_spawn > ped_interval:
@@ -949,8 +1011,9 @@ def get_real_detector():
         from ultralytics import YOLO
     except ImportError:
         return None
-    if real_detector is None:
-        real_detector = YOLO("yolov8n.pt")
+    with real_detector_lock:
+        if real_detector is None:
+            real_detector = YOLO("yolov8n.pt")
     return real_detector
 
 
@@ -1029,6 +1092,118 @@ def generate_camera_frames(camera_id=0):
     finally:
         cap.release()
 
+
+def get_video_source(video_id):
+    source = VIDEO_SOURCES.get(video_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Video not found")
+    path = os.path.join(ROOT_DIR, source["filename"])
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Missing video file: {source['filename']}")
+    return source, path
+
+
+def draw_video_status_frame(message, detail=None):
+    frame = np.zeros((540, 960, 3), dtype=np.uint8)
+    frame[:] = (18, 24, 27)
+    cv2.rectangle(frame, (70, 145), (890, 395), (28, 38, 42), -1, lineType=cv2.LINE_AA)
+    cv2.rectangle(frame, (70, 145), (890, 395), (88, 112, 132), 1, lineType=cv2.LINE_AA)
+    cv2.putText(frame, message, (110, 225), cv2.FONT_HERSHEY_SIMPLEX, 0.82, (235, 244, 248), 2, cv2.LINE_AA)
+    y = 278
+    for line in detail or []:
+        cv2.putText(frame, line, (110, y), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (160, 190, 198), 1, cv2.LINE_AA)
+        y += 34
+    ret, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    return buffer.tobytes()
+
+
+def draw_video_detection_overlay(frame, boxes, title, frame_index, video_id):
+    vehicle_count = 0
+    class_names = {
+        2: "car",
+        3: "motorcycle",
+        5: "bus",
+        7: "truck",
+    }
+    for box in boxes:
+        class_id = int(box.cls[0])
+        if class_id not in COCO_VEHICLE_CLASSES:
+            continue
+        confidence = float(box.conf[0])
+        label = f"{class_names.get(class_id, 'vehicle')} {confidence:.2f}"
+        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+        draw_detection_box(frame, x1, y1, x2, y2, label, (70, 255, 170))
+        vehicle_count += 1
+    update_video_sensor_count(video_id, vehicle_count)
+
+    panel = frame.copy()
+    cv2.rectangle(panel, (18, 18), (430, 122), (8, 14, 22), -1, lineType=cv2.LINE_AA)
+    cv2.addWeighted(panel, 0.74, frame, 0.26, 0, frame)
+    cv2.rectangle(frame, (18, 18), (430, 122), (88, 112, 132), 1, lineType=cv2.LINE_AA)
+    cv2.putText(frame, "YOLO VEHICLE ANALYSIS", (34, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.64, (235, 244, 248), 1, cv2.LINE_AA)
+    cv2.putText(frame, title.upper(), (34, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (132, 255, 190), 1, cv2.LINE_AA)
+    road = VIDEO_SOURCES.get(video_id, {}).get("road", "?")
+    cv2.putText(frame, f"ROAD {road}  VEHICLES: {vehicle_count:02d}", (34, 106), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (70, 255, 170), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"FRAME {frame_index}", (frame.shape[1] - 160, frame.shape[0] - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (190, 205, 212), 1, cv2.LINE_AA)
+    return frame
+
+
+def generate_processed_video_frames(video_id):
+    try:
+        source, path = get_video_source(video_id)
+    except HTTPException as exc:
+        frame = draw_video_status_frame("Video file not found", [str(exc.detail)])
+        while True:
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            time.sleep(1)
+
+    detector = get_real_detector()
+    if detector is None:
+        frame = draw_video_status_frame(
+            "YOLO model is not available",
+            [
+                "Install locally: python -m pip install ultralytics",
+                "The dashboard simulation still works without this model.",
+            ],
+        )
+        while True:
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            time.sleep(1)
+
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        frame = draw_video_status_frame("Could not open video", [source["filename"]])
+        while True:
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            time.sleep(1)
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 24
+    delay = max(0.03, min(0.12, 1.0 / fps))
+    frame_index = 0
+    cached_boxes = []
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                frame_index = 0
+                cached_boxes = []
+                continue
+
+            frame_index += 1
+            frame = cv2.resize(frame, (960, 540))
+            if frame_index % 3 == 1:
+                results = detector(frame, imgsz=640, conf=0.28, verbose=False)
+                cached_boxes = list(results[0].boxes)
+            frame = draw_video_detection_overlay(frame, cached_boxes, source["title"], frame_index, video_id)
+            ret, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 86])
+            if ret:
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
+            time.sleep(delay)
+    finally:
+        cap.release()
+
+
 @app.get("/video_feed")
 def video_feed():
     return StreamingResponse(generate_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -1037,6 +1212,39 @@ def video_feed():
 @app.get("/camera_feed")
 def camera_feed():
     return StreamingResponse(generate_camera_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/traffic_video/{video_id}")
+def traffic_video(video_id: int):
+    source, path = get_video_source(video_id)
+    return FileResponse(path, media_type="video/mp4", filename=source["filename"])
+
+
+@app.get("/processed_video/{video_id}")
+def processed_video(video_id: int):
+    return StreamingResponse(generate_processed_video_frames(video_id), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/api/v1/video-analytics")
+def video_analytics_sources():
+    return {
+        "model": "YOLOv8 optional local detector",
+        "vehicle_classes": ["car", "motorcycle", "bus", "truck"],
+        "videos": [
+            {
+                "id": video_id,
+                "title": source["title"],
+                "file": source["filename"],
+                "road": source["road"],
+                "axis": source["axis"],
+                "vehicle_count": video_vehicle_counts[video_id]["count"],
+                "processed_stream": f"/processed_video/{video_id}",
+                "raw_video": f"/traffic_video/{video_id}",
+                "available": os.path.exists(os.path.join(ROOT_DIR, source["filename"])),
+            }
+            for video_id, source in VIDEO_SOURCES.items()
+        ],
+    }
 
 @app.get("/set_flow")
 def set_flow(ns: int = 40, ew: int = 30, ped: int = 20):
@@ -1503,6 +1711,116 @@ def index():
                 border: 1px solid var(--surface-border);
                 box-shadow: 0 20px 40px rgba(0,0,0,0.4);
             }
+            .video-stack {
+                display: flex;
+                flex-direction: column;
+                gap: 18px;
+                width: min(100%, 980px);
+            }
+            .analysis-panel {
+                border-radius: 8px;
+                padding: 18px;
+                background: var(--surface);
+                border: 1px solid var(--surface-border);
+                box-shadow: 0 20px 40px rgba(0,0,0,0.28);
+            }
+            .analysis-header {
+                display: flex;
+                justify-content: space-between;
+                gap: 16px;
+                align-items: flex-start;
+                margin-bottom: 14px;
+            }
+            .analysis-header strong {
+                display: block;
+                color: #fff;
+                font-size: 1.08rem;
+                margin-bottom: 4px;
+            }
+            .analysis-header span {
+                color: #9baaa3;
+                font-size: 0.9rem;
+            }
+            .video-tabs {
+                display: grid;
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 8px;
+                margin-bottom: 14px;
+            }
+            .video-tabs button {
+                padding: 10px 8px;
+                border-radius: 6px;
+                border: 1px solid rgba(255,255,255,0.14);
+                background: rgba(0,0,0,0.2);
+                color: #dfe8e3;
+                font-weight: 600;
+                cursor: pointer;
+            }
+            .video-tabs button.active {
+                border-color: var(--primary);
+                color: #fff;
+                box-shadow: 0 0 12px rgba(0,255,136,0.18);
+            }
+            .analysis-frame {
+                width: 100%;
+                aspect-ratio: 16 / 9;
+                object-fit: cover;
+                background: #0b0f10;
+                border: 1px solid rgba(255,255,255,0.08);
+            }
+            .road-video-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 12px;
+            }
+            @media (max-width: 700px) {
+                .road-video-grid { grid-template-columns: 1fr; }
+            }
+            .road-feed-card {
+                border: 1px solid rgba(255,255,255,0.1);
+                background: rgba(0,0,0,0.22);
+                border-radius: 8px;
+                padding: 10px;
+            }
+            .road-feed-card strong {
+                display: flex;
+                justify-content: space-between;
+                gap: 10px;
+                color: #fff;
+                margin-bottom: 8px;
+                font-size: 0.92rem;
+            }
+            .road-feed-card strong span {
+                color: var(--secondary);
+                font-size: 0.82rem;
+            }
+            .road-feed-card img {
+                width: 100%;
+                aspect-ratio: 16 / 9;
+                object-fit: cover;
+                background: #0b0f10;
+                border: 1px solid rgba(255,255,255,0.08);
+            }
+            .sensor-grid {
+                display: grid;
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 8px;
+                margin-top: 12px;
+            }
+            .sensor-tile {
+                background: rgba(0,0,0,0.24);
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 6px;
+                padding: 9px;
+                color: #9baaa3;
+                font-size: 0.78rem;
+            }
+            .sensor-tile b {
+                display: block;
+                color: var(--primary);
+                font-size: 1.05rem;
+                margin-top: 2px;
+            }
             img { 
                 border-radius: 6px; 
                 display: block;
@@ -1840,8 +2158,44 @@ def index():
                     Procedural city rendering
                 </div>
             </div>
-            <div class="video-container">
-                <img id="feed" src="/video_feed" width="800" height="800" alt="Video Feed" />
+            <div class="video-stack">
+                <div class="video-container">
+                    <img id="feed" src="/video_feed" width="800" height="800" alt="Video Feed" />
+                </div>
+
+                <div class="analysis-panel">
+                    <div class="analysis-header">
+                        <div>
+                            <strong>YOLO Road Sensor Inputs</strong>
+                            <span>Each uploaded video is mapped to one road. YOLO vehicle counts drive the simulated North-South and East-West demand.</span>
+                        </div>
+                        <span id="video_demand_status">Waiting for video sensors</span>
+                    </div>
+                    <div class="road-video-grid">
+                        <div class="road-feed-card">
+                            <strong>North road <span>v1.mp4</span></strong>
+                            <img src="/processed_video/1" alt="North road YOLO analysis" />
+                        </div>
+                        <div class="road-feed-card">
+                            <strong>South road <span>v2.mp4</span></strong>
+                            <img src="/processed_video/2" alt="South road YOLO analysis" />
+                        </div>
+                        <div class="road-feed-card">
+                            <strong>East road <span>v3.mp4</span></strong>
+                            <img src="/processed_video/3" alt="East road YOLO analysis" />
+                        </div>
+                        <div class="road-feed-card">
+                            <strong>West road <span>v4.mp4</span></strong>
+                            <img src="/processed_video/4" alt="West road YOLO analysis" />
+                        </div>
+                    </div>
+                    <div class="sensor-grid">
+                        <div class="sensor-tile">North count<b id="sensor_n">0</b></div>
+                        <div class="sensor-tile">South count<b id="sensor_s">0</b></div>
+                        <div class="sensor-tile">East count<b id="sensor_e">0</b></div>
+                        <div class="sensor-tile">West count<b id="sensor_w">0</b></div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1924,6 +2278,14 @@ def index():
                     document.getElementById('decision_title').innerText = data.phase || 'Decision engine active';
                     document.getElementById('decision_reason').innerText =
                         `${data.reason} NS queue: ${data.ns_queue}, EW queue: ${data.ew_queue}, pedestrians: ${data.ped_queue}. ${data.incident ? 'Incident detected: vehicle blocked in intersection. Action: extend all-red phase.' : ''}`;
+                    const sensorCounts = data.video_sensor_counts || {};
+                    document.getElementById('sensor_n').innerText = sensorCounts.N ?? 0;
+                    document.getElementById('sensor_s').innerText = sensorCounts.S ?? 0;
+                    document.getElementById('sensor_e').innerText = sensorCounts.E ?? 0;
+                    document.getElementById('sensor_w').innerText = sensorCounts.W ?? 0;
+                    document.getElementById('video_demand_status').innerText = data.video_driven_demand
+                        ? 'Video-driven demand active'
+                        : 'Waiting for video sensor frames';
                 } catch (err) {
                     console.warn(err);
                 }
