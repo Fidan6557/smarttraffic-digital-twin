@@ -4,6 +4,30 @@ SmartTraffic Digital Twin is an AI signal optimization platform for city interse
 
 The current prototype is built as a real-time digital twin: it simulates vehicles, pedestrians, buses, emergency vehicles, signal phases, safety clearance, queue growth, and live operational KPIs. The goal is not only to animate traffic, but to show a decision-support system that stakeholders can understand, test, and evaluate.
 
+## Demo Preview
+
+The dashboard presents the system as an operations product rather than a toy simulation:
+
+- live intersection video stream
+- adaptive signal state
+- city scenario selector
+- explainable controller decisions
+- wait time, throughput, CO2, fuel, and pedestrian-risk KPIs
+- downloadable PDF reports for stakeholder review
+
+Recommended visual for GitHub: add a dashboard screenshot or short demo GIF here before final submission.
+
+## Why This Matters for a Hackathon
+
+SmartTraffic is designed to be easy for judges and stakeholders to evaluate in a live demo:
+
+- **Visible impact:** the dashboard compares AI Adaptive control against a fixed-timer baseline.
+- **Explainable AI:** every signal decision is logged with a human-readable reason.
+- **Safety-first logic:** yellow and all-red clearance are enforced before conflicting movement is released.
+- **Smart-city relevance:** the system includes public transport priority, emergency priority, pedestrian risk, CO2, and fuel estimates.
+- **Stakeholder handoff:** reports can be downloaded as PDFs instead of only showing numbers on screen.
+- **Integration-ready structure:** the API exposes metrics, scenarios, control mode, policy tuning, audit logs, and reports.
+
 ## Problem
 
 Many intersections still operate with fixed timers. This creates several issues:
@@ -209,6 +233,15 @@ http://127.0.0.1:8003
 - Add multi-intersection corridor coordination.
 - Export signal timing recommendations for traffic engineers.
 - Compare daily/weekly policy performance across scenarios.
+
+## Current Limitations
+
+This prototype is intentionally scoped for a hackathon demo. It demonstrates the product logic, safety rules, and stakeholder workflow, but it is not a certified traffic-engineering deployment system yet.
+
+- Traffic demand is simulated, with optional camera-detection endpoints prepared for future integration.
+- CO2 and fuel savings are simplified estimates based on saved idle time.
+- The adaptive controller is a transparent rule-based decision engine, not a trained black-box model.
+- Real deployment would require calibrated detector zones, local traffic regulations, field validation, and hardware integration.
 
 ## Positioning
 
